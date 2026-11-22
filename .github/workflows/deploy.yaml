@@ -1,0 +1,120 @@
+---
+name: Deploy
+
+# yamllint disable-line rule:truthy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  SITE_URL: https://cdf-eagles.github.io/packages
+  APK_KEY_NAME: py-findbig
+
+jobs:
+  build:
+    name: Build the repositories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      attestations: read
+    outputs:
+      files: ${{ steps.fetch.outputs.files }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the repository tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends apt-utils createrepo-c
+          apt-ftparchive --version | head -n 1
+          createrepo_c --version
+
+      - name: Download and verify the release files
+        id: fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sh scripts/fetch-release-files.sh release-files | tee "${RUNNER_TEMP}/fetch.log"
+          files=$(tail -n 1 "${RUNNER_TEMP}/fetch.log")
+          echo "files=${files}" >> "${GITHUB_OUTPUT}"
+
+      # The signing keys must match the public keys committed under keys/.
+      - name: Import the signing keys
+        if: steps.fetch.outputs.files != '0'
+        env:
+          PACKAGES_SIGNING_KEY: ${{ secrets.PACKAGES_SIGNING_KEY }}
+          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ -z "${PACKAGES_SIGNING_KEY}" ] || [ -z "${APK_SIGNING_KEY}" ]; then
+            echo "::error::PACKAGES_SIGNING_KEY or APK_SIGNING_KEY is not set"; exit 1
+          fi
+          GNUPGHOME="${RUNNER_TEMP}/gnupg"
+          export GNUPGHOME
+          mkdir "${GNUPGHOME}"
+          printf '%s\n' "${PACKAGES_SIGNING_KEY}" | gpg --batch --quiet --import
+          ours=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')
+          theirs=$(gpg --show-keys --with-colons keys/packages-signing.asc | awk -F: '/^fpr/ { print $10; exit }')
+          if [ -z "${ours}" ] || [ "${ours}" != "${theirs}" ]; then
+            echo "::error::PACKAGES_SIGNING_KEY does not match keys/packages-signing.asc"; exit 1
+          fi
+          fpr=${ours}
+          mkdir "${RUNNER_TEMP}/apk"
+          key="${RUNNER_TEMP}/apk/${APK_KEY_NAME}.rsa"
+          printf '%s\n' "${APK_SIGNING_KEY}" > "${key}"
+          ours=$(openssl pkey -in "${key}" -pubout -outform DER | sha256sum)
+          theirs=$(openssl pkey -pubin -in "keys/${APK_KEY_NAME}.rsa.pub" -outform DER | sha256sum)
+          if [ "${ours}" != "${theirs}" ]; then
+            echo "::error::APK_SIGNING_KEY does not match keys/${APK_KEY_NAME}.rsa.pub"; exit 1
+          fi
+          {
+            echo "GNUPGHOME=${GNUPGHOME}"
+            echo "SIGNING_FPR=${fpr}"
+            echo "APK_KEY_FILE=${key}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Build and sign the repositories
+        if: steps.fetch.outputs.files != '0'
+        run: sh scripts/build-repository.sh release-files site-out
+
+      - name: Remove the signing keys
+        if: always()
+        run: rm -rf "${RUNNER_TEMP}/gnupg" "${RUNNER_TEMP}/apk"
+
+      - name: Upload the site
+        if: steps.fetch.outputs.files != '0'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: site-out
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: needs.build.outputs.files != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

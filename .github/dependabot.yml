@@ -1,0 +1,40 @@
+---
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /ci
+    schedule:
+      interval: weekly
+    groups:
+      ci-python-tools:
+        patterns: ["*"]
+
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      pre-commit-hooks:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directories:
+      - /images/alpine-index
+      - /test/images/almalinux9
+      - /test/images/almalinux10
+      - /test/images/alpine
+      - /test/images/debian
+      - /test/images/ubuntu
+    schedule:
+      interval: weekly
+    groups:
+      images:
+        patterns: ["*"]

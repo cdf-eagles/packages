@@ -1,0 +1,173 @@
+---
+name: CI
+
+# yamllint disable-line rule:truthy
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so new distribution images, tool releases, and advisories surface without a push.
+    - cron: '23 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  SNYK_VERSION: 1.1308.4
+  SNYK_SHA256: 979172ee128903f50e43fff221f22a0689579f22c086dabaa0d1a5416485b9ba
+  NFPM_VERSION: 2.49.0
+  NFPM_SHA256: 2afaa5ffb5e3493402e31e7c67a5a1fb42133e3f66fc315ca0051934125561c7
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the Python tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/venv"
+          "${RUNNER_TEMP}/venv/bin/pip" install --quiet --require-virtualenv -r ci/requirements.txt
+          echo "${RUNNER_TEMP}/venv/bin" >> "${GITHUB_PATH}"
+
+      - name: Run yamllint
+        run: |
+          yamllint --version
+          yamllint --strict .
+
+      # yamllint covers check-yaml; actionlint turns its shellcheck checks off
+      # when shellcheck is not on PATH.
+      - name: Run actionlint, shellcheck, and the remaining pre-commit hooks
+        env:
+          SKIP: check-yaml
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          pre-commit --version
+          pre-commit run --all-files --show-diff-on-failure
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require an unshallow clone
+        run: test "$(git rev-parse --is-shallow-repository)" = false
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --proto "=https" --tlsv1.2 -sSfL -o "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}" gitleaks
+          "${RUNNER_TEMP}/gitleaks" version
+
+      - name: Run gitleaks over the history of the checked-out commit
+        run: '"${RUNNER_TEMP}/gitleaks" git --no-banner --redact --verbose --log-opts="HEAD" .'
+
+  repository:
+    name: Repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the repository tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends apt-utils createrepo-c
+          apt-ftparchive --version | head -n 1
+          createrepo_c --version
+
+      - name: Install nfpm
+        run: |
+          set -euo pipefail
+          tarball="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl --proto "=https" --tlsv1.2 -sSfL -o "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${tarball}"
+          echo "${NFPM_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/bin"
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}/bin" nfpm
+          "${RUNNER_TEMP}/bin/nfpm" --version
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - name: Install, upgrade, and refuse an untrusted key on each distribution
+        run: sh scripts/test-repository.sh
+
+  snyk:
+    name: Snyk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Snyk CLI reads the dependency tree from the installed packages.
+      - name: Install the Python tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/venv"
+          "${RUNNER_TEMP}/venv/bin/pip" install --quiet --require-virtualenv -r ci/requirements.txt
+
+      - name: Install the Snyk CLI
+        run: |
+          set -euo pipefail
+          curl --proto "=https" --tlsv1.2 -sSfL -o "${RUNNER_TEMP}/snyk" \
+            "https://github.com/snyk/cli/releases/download/v${SNYK_VERSION}/snyk-linux"
+          echo "${SNYK_SHA256}  ${RUNNER_TEMP}/snyk" | sha256sum -c -
+          chmod 755 "${RUNNER_TEMP}/snyk"
+          "${RUNNER_TEMP}/snyk" --version
+
+      # Fails on any high or critical issue in the CI tool pins, on a scan
+      # error, and when ci/requirements.txt is missing, so the required check
+      # fails closed. Dependabot pull requests read SNYK_TOKEN from the
+      # Dependabot secrets.
+      - name: Fail on high or critical dependency issues
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_DISABLE_ANALYTICS: 1
+        run: |
+          set -euo pipefail
+          if [ -z "${SNYK_TOKEN}" ]; then
+            echo "::error::SNYK_TOKEN is not set for this run"
+            exit 1
+          fi
+          "${RUNNER_TEMP}/snyk" test --file=ci/requirements.txt --package-manager=pip \
+            --command="${RUNNER_TEMP}/venv/bin/python" --severity-threshold=high
+
+  tool-drift:
+    name: Tool drift
+    if: github.event_name == 'schedule'
+    permissions:
+      contents: read
+      issues: write
+    uses: cdf-eagles/.github/.github/workflows/tool-drift.yaml@a3ceea039aa09885488009ee39ac07d9e7cfdefe  # v1.1.1

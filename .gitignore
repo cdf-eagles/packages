@@ -1,0 +1,17 @@
+# Virtual environment for the checks (see the README's Contributing section)
+.venv/
+
+# Build output
+release-files/
+site-out/
+
+# Environment files may hold secrets
+.env
+.envrc
+
+# Editor and OS files
+.DS_Store
+*.swp
+*.swo
+*~
+.*.un~

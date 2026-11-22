@@ -1,0 +1,2 @@
+# One release file per line, added by py-findbig's release workflow:
+# <tag> <release candidate tag> <file> <sha256>
