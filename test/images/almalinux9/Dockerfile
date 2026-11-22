@@ -1,2 +1,2 @@
-FROM almalinux:9.7
+FROM almalinux:10.3
 USER nobody
