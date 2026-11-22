@@ -1,2 +1,5 @@
 # One release file per line, added by py-findbig's release workflow:
 # <tag> <release candidate tag> <file> <sha256>
+v0.7.0 v0.7.0-rc.1 findbig_0.7.0_all.deb c7b9b1103aa8d88f1f0a62c3c20cb0ee65715c36230ccd957b835d51a5b64b35
+v0.7.0 v0.7.0-rc.1 findbig-0.7.0-1.noarch.rpm 349e03eff8900e6824a4f702d50e6f85c7e971cc10a777b66e3da0717742e740
+v0.7.0 v0.7.0-rc.1 findbig_0.7.0_noarch.apk 03a20573b8b5be7f871249e82bd357dd193b14a00321fd67563daaacf5808850
