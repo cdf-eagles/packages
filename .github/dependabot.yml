@@ -28,7 +28,6 @@ updates:
   - package-ecosystem: docker
     directories:
       - /images/alpine-index
-      - /test/images/almalinux9
       - /test/images/almalinux10
       - /test/images/alpine
       - /test/images/debian
@@ -37,4 +36,16 @@ updates:
       interval: weekly
     groups:
       images:
+        patterns: ["*"]
+
+  # The AlmaLinux 9 image takes minor updates only.
+  - package-ecosystem: docker
+    directory: /test/images/almalinux9
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: almalinux
+        update-types: ["version-update:semver-major"]
+    groups:
+      almalinux9-image:
         patterns: ["*"]
