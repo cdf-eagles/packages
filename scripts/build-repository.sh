@@ -78,7 +78,8 @@ done
         --armor --detach-sign --output dists/stable/Release.gpg dists/stable/Release
 )
 
-# dnf: one repository of noarch packages; gzip metadata for older dnf.
+# dnf: one repository for every architecture; dnf picks the packages that
+# match the host. gzip metadata for older dnf.
 mkdir -p "${site}/rpm"
 for f in "${input}"/*.rpm; do
     [ -e "${f}" ] || continue
@@ -105,6 +106,11 @@ for f in "${input}"/*.apk; do
     ver=$(printf '%s\n' "${info}" | sed -n 's/^pkgver = //p')
     if [ -z "${name}" ] || [ -z "${ver}" ]; then
         echo "no pkgname or pkgver in ${f}" >&2
+        exit 65
+    fi
+    pkgarch=$(printf '%s\n' "${info}" | sed -n 's/^arch = //p')
+    if [ "${pkgarch}" != noarch ]; then
+        echo "${f} is built for '${pkgarch}'; only noarch .apk files are supported" >&2
         exit 65
     fi
     for arch in ${apk_arches} noarch; do

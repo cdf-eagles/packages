@@ -3,13 +3,16 @@
 
 # packages
 
-Signed apt, dnf, and apk repositories for this account's command-line tools, served from GitHub Pages at <https://cdf-eagles.github.io/packages/>. Once a repository is added, the distribution's package manager installs the tools and offers each new release as an upgrade.
+Signed apt, dnf, and apk repositories for this account's tools, served from GitHub Pages at <https://cdf-eagles.github.io/packages/>. Once a repository is added, the distribution's package manager installs the tools and offers each new release as an upgrade.
 
 | Package | Installs | Source |
 |---|---|---|
 | `findbig` | the command `findbig`, which lists the largest files and directories under a directory, and its manual page (`man findbig`) | [py-findbig](https://github.com/cdf-eagles/py-findbig) |
+| `zpool-status-exporter` | the Prometheus exporter for ZFS `zpool-status-exporter`, its systemd unit, its settings file `/etc/sysconfig/zpool-status-exporter`, and its manual page (`man 8 zpool-status-exporter`); served for dnf on x86_64 only | [zpool-status-exporter](https://github.com/cdf-eagles/zpool-status-exporter) |
 
 ## Installation
+
+The commands below install findbig; install any other package in the table the same way, by its name.
 
 ### Debian and Ubuntu
 
@@ -58,13 +61,13 @@ Both public keys are committed under `keys/`. The deploy refuses to sign with a 
 
 No package file is stored in this repository; the GitHub releases remain the source of every file.
 
-The site holds one apt suite, `stable`, with one component, `main`; a dnf repository under `rpm/`; and apk indexes for `x86_64` and `aarch64` under `alpine/`. apk-tools 2 downloads packages from the architecture's directory and apk-tools 3 from `noarch/`, so both hold a copy of each `.apk`, named `<name>-<version>.apk` as apk expects.
+The site holds one apt suite, `stable`, with one component, `main`; a dnf repository under `rpm/`; and apk indexes for `x86_64` and `aarch64` under `alpine/`. apk-tools 2 downloads packages from the architecture's directory and apk-tools 3 from `noarch/`, so both hold a copy of each `.apk`, named `<name>-<version>.apk` as apk expects. The dnf repository and the apt suite hold every architecture's packages, and the package manager installs those that match the host; an `.apk` must be architecture-independent (`noarch`), and the build refuses any other.
 
 ### Adding a project
 
 * `sources/<project>.conf` names the project's repository (`repository=`) and the release workflow that attests its files (`signer_workflow=`).
 * `sources/<project>.txt` lists its files as above.
-* The project's release workflow signs its `.rpm` with the OpenPGP key and its `.apk` with an RSA key whose public key is committed under `keys/` and copied to the site; a second apk key also needs a line in the Alpine instructions.
+* The project's release workflow signs its `.rpm` with the OpenPGP key and any `.apk` with an RSA key whose public key is committed under `keys/` and copied to the site; a second apk key also needs a line in the Alpine instructions.
 
 ## Continuous integration
 
@@ -74,7 +77,7 @@ The site holds one apt suite, `stable`, with one component, `main`; a dnf reposi
 |---|---|---|
 | `Lint` | Ubuntu 24.04 | `yamllint --strict`, then the pre-commit hooks: workflow and Dependabot schema checks, actionlint, shellcheck over the scripts, whitespace and private-key checks, and ripsecrets |
 | `Secret scan` | Ubuntu 24.04 | gitleaks over the full history of an unshallow clone |
-| `Repository` | Ubuntu 24.04 | `scripts/test-repository.sh`: builds two versions of a stand-in package with nFPM and throwaway keys, serves the repositories over HTTP, installs the first version and upgrades to the second on Debian 13, Ubuntu 24.04, AlmaLinux 9 and 10, and Alpine Linux 3.24, then checks that apt refuses the suite when it trusts a different key |
+| `Repository` | Ubuntu 24.04 | `scripts/test-repository.sh`: builds two versions of two stand-in packages with nFPM and throwaway keys, one architecture-independent and one `.deb` and `.rpm` pair built for the runner's architecture, serves the repositories over HTTP, installs the first version and upgrades to the second on Debian 13, Ubuntu 26.04, AlmaLinux 9 and 10, and Alpine Linux 3.24 (the architecture-independent one only), then checks that the build refuses an `.apk` built for one architecture and that apt refuses the suite when it trusts a different key |
 | `Snyk` | Ubuntu 24.04 | installs the Python tools pinned in `ci/requirements.txt` and tests them with the Snyk command-line interface (CLI); fails on any high or critical dependency issue, a scan error, or a missing `SNYK_TOKEN` secret |
 | `Tool drift` | Ubuntu 24.04 | weekly only: opens an issue when a pinned tool that Dependabot cannot update falls behind |
 

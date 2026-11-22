@@ -1,10 +1,13 @@
 #!/bin/sh
 #
-# Prove the repositories end to end: build two versions of a stand-in
-# package with throwaway keys, serve the repositories over HTTP, install
-# the first version on each distribution with its package manager, publish
-# the second, and check that the package manager upgrades to it. Finally
-# check that apt refuses the repository when it trusts a different key.
+# Prove the repositories end to end: build two versions of two stand-in
+# packages with throwaway keys, one architecture-independent and one built
+# for the host's architecture (.deb and .rpm only), serve the repositories
+# over HTTP, install the first version on each distribution with its
+# package manager, publish the second, and check that the package manager
+# upgrades to it. Finally check that the build refuses an .apk built for
+# one architecture and that apt refuses the repository when it trusts a
+# different key.
 #
 # Usage: test-repository.sh
 #
@@ -50,6 +53,15 @@ APK_KEY_FILE="${work}/packages-test.rsa"
 SITE_URL=${url}
 export APK_KEY_FILE SITE_URL
 
+case $(uname -m) in
+    x86_64 | amd64) native_arch=amd64 ;;
+    aarch64 | arm64) native_arch=arm64 ;;
+    *)
+        echo "unsupported host architecture $(uname -m)" >&2
+        exit 70
+        ;;
+esac
+
 build_packages() {
     version=$1
     stage="${work}/stage-${version}"
@@ -82,6 +94,29 @@ NFPM
         nfpm package --packager "${packager}" --config "${stage}/nfpm.yaml" \
             --target "${work}/in/" > /dev/null
     done
+
+    printf '#!/bin/sh\necho "packages-test-native v%s"\n' "${version}" > "${stage}/packages-test-native"
+    cat > "${stage}/nfpm-native.yaml" <<NFPM
+name: packages-test-native
+arch: ${native_arch}
+platform: linux
+version: ${version}
+maintainer: noreply@github.com
+description: Architecture-specific stand-in package for the repository tests
+license: BSD-3-Clause
+contents:
+  - src: ${stage}/packages-test-native
+    dst: /usr/bin/packages-test-native
+    file_info:
+      mode: 0755
+rpm:
+  signature:
+    key_file: ${work}/signing.asc
+NFPM
+    for packager in deb rpm; do
+        nfpm package --packager "${packager}" --config "${stage}/nfpm-native.yaml" \
+            --target "${work}/in/" > /dev/null
+    done
 }
 
 as_root() {
@@ -89,13 +124,24 @@ as_root() {
     docker exec --user 0 "packages-test-$1" sh -euxc "$2"
 }
 
+# check_version DISTRIBUTION VERSION [COMMAND]
 check_version() {
-    got=$(docker exec --user nobody "packages-test-$1" packages-test)
-    if [ "${got}" != "packages-test v$2" ]; then
-        echo "FAIL $1: packages-test printed '${got}', not v$2" >&2
+    command=${3:-packages-test}
+    got=$(docker exec --user nobody "packages-test-$1" "${command}")
+    if [ "${got}" != "${command} v$2" ]; then
+        echo "FAIL $1: ${command} printed '${got}', not v$2" >&2
         exit 1
     fi
-    echo "PASS $1: packages-test v$2"
+    echo "PASS $1: ${command} v$2"
+}
+
+# check_versions DISTRIBUTION VERSION: Alpine has no native stand-in.
+check_versions() {
+    check_version "$1" "$2"
+    case $1 in
+        alpine) ;;
+        *) check_version "$1" "$2" packages-test-native ;;
+    esac
 }
 
 build_packages 1.0.0
@@ -125,11 +171,11 @@ for d in ${distributions}; do
                 cp /tmp/packages-signing.asc /etc/apt/keyrings/
                 cp /tmp/packages.sources /etc/apt/sources.list.d/
                 apt-get update
-                apt-get install -y --no-install-recommends packages-test'
+                apt-get install -y --no-install-recommends packages-test packages-test-native'
             ;;
         almalinux*)
             as_root "${d}" 'cp /tmp/packages.repo /etc/yum.repos.d/
-                dnf install -y packages-test'
+                dnf install -y packages-test packages-test-native'
             ;;
         alpine)
             as_root "${d}" "cp /tmp/packages-test.rsa.pub /etc/apk/keys/
@@ -139,7 +185,7 @@ for d in ${distributions}; do
             ;;
         *) exit 70 ;;
     esac
-    check_version "${d}" 1.0.0
+    check_versions "${d}" 1.0.0
 done
 
 build_packages 1.0.1
@@ -156,8 +202,24 @@ for d in ${distributions}; do
             as_root "${d}" 'apk update && apk upgrade' ;;
         *) exit 70 ;;
     esac
-    check_version "${d}" 1.0.1
+    check_versions "${d}" 1.0.1
 done
+
+echo "== build: refuse an .apk built for one architecture"
+mkdir -p "${work}/apk-arch/in"
+sed 's/^arch: .*/arch: amd64/' "${work}/stage-1.0.1/nfpm.yaml" > "${work}/apk-arch/nfpm.yaml"
+nfpm package --packager apk --config "${work}/apk-arch/nfpm.yaml" \
+    --target "${work}/apk-arch/in/" > /dev/null
+if sh scripts/build-repository.sh "${work}/apk-arch/in" "${work}/apk-arch/site" > "${work}/apk-arch.log" 2>&1; then
+    echo "FAIL build: an .apk built for x86_64 was accepted" >&2
+    exit 1
+fi
+if ! grep -q "only noarch .apk files are supported" "${work}/apk-arch.log"; then
+    cat "${work}/apk-arch.log" >&2
+    echo "FAIL build: the build failed for a reason other than the .apk architecture" >&2
+    exit 1
+fi
+echo "PASS build: refused an .apk built for x86_64"
 
 echo "== debian: refuse a repository signed by an untrusted key"
 gpg --quiet --batch --passphrase '' --quick-generate-key \
